@@ -44,6 +44,12 @@ set_encoding(Connection, Encoding) ->
 	Packet = <<?COM_QUERY, "set names '", (erlang:atom_to_binary(Encoding, utf8))/binary, "'">>,
 	emysql_tcp:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0).
 
+
+execute(Connection, Query, Fun) when is_list(Query) andalso is_function(Fun) ->
+	Packet = <<?COM_QUERY, (emysql_util:to_binary(Query, Connection#emysql_connection.encoding))/binary>>,
+	emysql_tcp:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0, Fun);	
+
+
 execute(Connection, Query, []) when is_list(Query) ->
 	 %-% io:format("~p execute list: ~p using connection: ~p~n", [self(), iolist_to_binary(Query), Connection#emysql_connection.id]),
 	Packet = <<?COM_QUERY, (emysql_util:to_binary(Query, Connection#emysql_connection.encoding))/binary>>,
