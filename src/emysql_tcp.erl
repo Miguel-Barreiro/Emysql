@@ -35,6 +35,7 @@
 
 
 send_and_recv_packet( Sock, Packet, SeqNum, Fun) when is_function(Fun) ->
+	
 	case gen_tcp:send(Sock, <<(size(Packet)):24/little, SeqNum:8, Packet/binary>>) of
 		ok -> 
 			%-% io:format("~p send_and_recv_packet: send ok~n", [self()]),
@@ -48,6 +49,7 @@ send_and_recv_packet( Sock, Packet, SeqNum, Fun) when is_function(Fun) ->
 	
 
 send_and_recv_packet(Sock, Packet, SeqNum) ->
+
 	%-% io:format("~nsend_and_receive_packet: SEND SeqNum: ~p, Binary: ~p~n", [SeqNum, <<(size(Packet)):24/little, SeqNum:8, Packet/binary>>]),
 	%-% io:format("~p send_and_recv_packet: send~n", [self()]),
 	case gen_tcp:send(Sock, <<(size(Packet)):24/little, SeqNum:8, Packet/binary>>) of
@@ -94,6 +96,7 @@ recv_packet(Sock) ->
 	Data = recv_packet_body(Sock, PacketLength),
 	%-% io:format("~nrecv_packet: len: ~p, data: ~p~n", [PacketLength, Data]),
 	#packet{size=PacketLength, seq_num=SeqNum, data=Data}.
+
 
 % OK response: first byte 0. See -1-
 response(_Sock, #packet{seq_num = SeqNum, data = <<0:8, Rest/binary>>}=_Packet,_Fun) ->
@@ -279,7 +282,9 @@ recv_row_data(Sock, FieldList, SeqNum, Fun) ->
 
 recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun) ->
 	%-% io:format("~nreceive row ~p: ", [Key]),
-	case recv_packet(Sock) of
+	Res = recv_packet(Sock),
+
+	case Res of
 		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _WarningCount:16/little, ServerStatus:16/little>>} ->
 			%-% io:format("- eof: ~p~n", [emysql_conn:hstate(ServerStatus)]),
 			{SeqNum1, ?ETS_SELECT(Tid), ServerStatus};
@@ -287,7 +292,7 @@ recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun) ->
 			%-% io:format("- eof.~n", []),
 			{SeqNum1, ?ETS_SELECT(Tid), ?SERVER_NO_STATUS};
 		#packet{seq_num = SeqNum1, data = RowData} ->
-			%-% io:format("Seq: ~p raw: ~p~n", [SeqNum1, RowData]),
+			%io:format("Seq: ~p raw: ~p~n", [SeqNum1, RowData]),
 			Row = decode_row_data(RowData, FieldList, []),
 			if
 				is_function(Fun) ->

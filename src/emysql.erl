@@ -421,7 +421,8 @@ execute(PoolId, StmtName) when is_atom(StmtName) ->
 %%
 
 execute(PoolId, Query, Fun) when (is_list(Query) orelse is_binary(Query)) andalso is_function(Fun) ->
-	execute(PoolId, Query, Fun, default_timeout());
+	Connection = emysql_conn_mgr:wait_for_connection(PoolId),
+	monitor_work(Connection, no_timeout, {emysql_conn, execute, [Connection, Query, Fun]});
 
 execute(PoolId, Query, Args) when (is_list(Query) orelse is_binary(Query)) andalso is_list(Args) ->
 	execute(PoolId, Query, Args, default_timeout());
@@ -467,10 +468,6 @@ execute(PoolId, StmtName, Timeout) when is_atom(StmtName), is_integer(Timeout) -
 %% @see prepare/2.
 %% @end doc: hd feb 11
 %%
-
-execute(PoolId, Query, Fun, Timeout) when (is_list(Query) orelse is_binary(Query)) andalso is_function(Fun) andalso is_integer(Timeout) ->
-	Connection = emysql_conn_mgr:wait_for_connection(PoolId),
-	monitor_work(Connection, Timeout, {emysql_conn, execute, [Connection, Query, Fun]});
 
 execute(PoolId, Query, Args, Timeout) when (is_list(Query) orelse is_binary(Query)) andalso is_list(Args) andalso is_integer(Timeout) ->
     %-% io:format("~p execute getting connection for pool id ~p~n",[self(), PoolId]),
@@ -565,6 +562,51 @@ execute(PoolId, StmtName, Args, Timeout, nonblocking) when is_atom(StmtName), is
 %% @private 
 %% @end doc: hd feb 11
 %%
+
+
+monitor_work(Connection, no_timeout, {M,F,A}) when is_record(Connection, emysql_connection) ->
+	%% spawn a new process to do work, then monitor that process until
+	%% it either dies, returns data or times out.
+	Parent = self(),
+	Pid = spawn(
+		fun() ->
+			receive start ->
+				Parent ! {self(), apply(M, F, A)}
+			end
+		end),
+	Mref = erlang:monitor(process, Pid),
+	Pid ! start,
+	receive
+		{'DOWN', Mref, process, Pid, {_, closed}} ->
+            %-% io:format("monitor_work: ~p DOWN/closed -> renew~n", [Pid]),
+			case emysql_conn:reset_connection(emysql_conn_mgr:pools(), Connection, keep) of
+				NewConnection when is_record(NewConnection, emysql_connection) ->
+					%% re-loop, with new connection.
+					[_OldConn | RestArgs] = A,
+					NewA = [NewConnection | RestArgs],
+					monitor_work(NewConnection, no_timeout, {M, F, NewA});
+				{error, FailedReset} -> 
+					exit({connection_down, {and_conn_reset_failed, FailedReset}})
+			end;			
+		{'DOWN', Mref, process, Pid, Reason} ->
+			%% if the process dies, reset the connection
+			%% and re-throw the error on the current pid.
+			%% catch if re-open fails and also signal it.
+            %-% io:format("monitor_work: ~p DOWN ~p -> exit~n", [Pid, Reason]),
+			case emysql_conn:reset_connection(emysql_conn_mgr:pools(), Connection, pass) of
+				{error,FailedReset} -> 
+					exit({Reason, {and_conn_reset_failed, FailedReset}});
+				_ -> exit({Reason, {}})
+			end;
+		{Pid, Result} ->
+			%% if the process returns data, unlock the
+			%% connection and collect the normal 'DOWN'
+			%% message send from the child process
+            %-% io:format("monitor_work: ~p got result -> demonitor ~p, unlock connection ~p, return result~n", [Pid, Mref, Connection#emysql_connection.id]),
+			erlang:demonitor(Mref, [flush]),
+			emysql_conn_mgr:pass_connection(Connection),
+			Result
+	end;
 
 monitor_work(Connection, Timeout, {M,F,A}) when is_record(Connection, emysql_connection) ->
 	%% spawn a new process to do work, then monitor that process until
