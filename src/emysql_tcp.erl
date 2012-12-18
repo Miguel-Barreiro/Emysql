@@ -34,8 +34,8 @@
 -define(ETS_SELECT(TableID), ets:select(TableID,[{{'_','$2'},[],['$2']}])).
 
 
-send_and_recv_packet( Sock, Packet, SeqNum, Fun) when is_function(Fun) ->
-	
+send_and_recv_packet( Sock, Packet, SeqNum, Function ) when is_function(Function) ->
+
 	case gen_tcp:send(Sock, <<(size(Packet)):24/little, SeqNum:8, Packet/binary>>) of
 		ok -> 
 			%-% io:format("~p send_and_recv_packet: send ok~n", [self()]),
@@ -45,7 +45,7 @@ send_and_recv_packet( Sock, Packet, SeqNum, Fun) when is_function(Fun) ->
 			exit({failed_to_send_packet_to_server, Reason})
 	end,
 	%-% io:format("~p send_and_recv_packet: resonse_list~n", [self()]),
-	response_list(Sock, ?SERVER_MORE_RESULTS_EXIST, Fun).
+	response_list(Sock, ?SERVER_MORE_RESULTS_EXIST, {Function, {} }).
 	
 
 send_and_recv_packet(Sock, Packet, SeqNum) ->
@@ -74,9 +74,9 @@ send_and_recv_packet(Sock, Packet, SeqNum) ->
 	end.
 
 
-response_list(_, 0, Fun) when is_function(Fun) -> [];
+response_list(_, 0, {Function, _Acumulator}) when is_function(Function) -> [];
 
-response_list(Sock, ?SERVER_MORE_RESULTS_EXIST, Fun) when is_function(Fun) ->
+response_list(Sock, ?SERVER_MORE_RESULTS_EXIST, Fun = {Function, _Acumulator} ) when is_function(Function) ->
 	{_Response, ServerStatus} = response(Sock, recv_packet(Sock), Fun ),
 	response_list(Sock, ServerStatus band ?SERVER_MORE_RESULTS_EXIST, Fun).
 
@@ -85,8 +85,9 @@ response_list(Sock, ?SERVER_MORE_RESULTS_EXIST, Fun) when is_function(Fun) ->
 response_list(_, 0) -> [];
 
 response_list(Sock, ?SERVER_MORE_RESULTS_EXIST) ->
-	{Response, ServerStatus} = response(Sock, recv_packet(Sock), no_function ),
+	{Response, ServerStatus} = response(Sock, recv_packet(Sock), {no_function, {}} ),
 	[ Response | response_list(Sock, ServerStatus band ?SERVER_MORE_RESULTS_EXIST)].
+
 
 recv_packet(Sock) ->
 	%-% io:format("~p recv_packet~n", [self()]),
@@ -99,7 +100,7 @@ recv_packet(Sock) ->
 
 
 % OK response: first byte 0. See -1-
-response(_Sock, #packet{seq_num = SeqNum, data = <<0:8, Rest/binary>>}=_Packet,_Fun) ->
+response(_Sock, #packet{seq_num = SeqNum, data = <<0:8, Rest/binary>>}=_Packet, _Fun ) ->
 	%-% io:format("~nresponse (OK): ~p~n", [_Packet]),
 	{AffectedRows, Rest1} = emysql_util:length_coded_binary(Rest),
 	{InsertId, Rest2} = emysql_util:length_coded_binary(Rest1),
@@ -154,7 +155,7 @@ response(_Sock, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, Msg/b
 	 ?SERVER_NO_STATUS };
 
 % DATA response.
-response(Sock, #packet{seq_num = SeqNum, data = Data}=_Packet, Fun) ->
+response(Sock, #packet{seq_num = SeqNum, data = Data}=_Packet, Fun ) ->
 	%-% io:format("~nresponse (DATA): ~p~n", [_Packet]),
 	{FieldCount, Rest1} = emysql_util:length_coded_binary(Data),
 	{Extra, _} = emysql_util:length_coded_binary(Rest1),
@@ -274,13 +275,13 @@ recv_field_list(Sock, _SeqNum, Tid, Key) ->
 			recv_field_list(Sock, SeqNum1, Tid, Key+1)
 	end.
 
-recv_row_data(Sock, FieldList, SeqNum, Fun) ->
+recv_row_data(Sock, FieldList, SeqNum, Fun ) ->
 	Tid = ets:new(emysql_row_data, [ordered_set, private]),
 	Res = recv_row_data(Sock, FieldList, SeqNum, Tid, 0, Fun),
 	ets:delete(Tid),
 	Res.
 
-recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun) ->
+recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun = {Function, User_data}) ->
 	%-% io:format("~nreceive row ~p: ", [Key]),
 	Res = recv_packet(Sock),
 
@@ -288,24 +289,28 @@ recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun) ->
 		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _WarningCount:16/little, ServerStatus:16/little>>} ->
 			%-% io:format("- eof: ~p~n", [emysql_conn:hstate(ServerStatus)]),
 			{SeqNum1, ?ETS_SELECT(Tid), ServerStatus};
+
 		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _/binary>>} ->
 			%-% io:format("- eof.~n", []),
 			{SeqNum1, ?ETS_SELECT(Tid), ?SERVER_NO_STATUS};
+
 		#packet{seq_num = SeqNum1, data = RowData} ->
 			%io:format("Seq: ~p raw: ~p~n", [SeqNum1, RowData]),
 			Row = decode_row_data(RowData, FieldList, []),
 			if
-				is_function(Fun) ->
-					Get_field_name = fun( Field ) ->
-						binary_to_list(Field#field.name)
-					end,
-					Fields = lists:map( Get_field_name, FieldList ),
-					erlang:apply(Fun , [lists:zip( Fields, Row)]);
+				is_function(Function)  ->
+					case erlang:apply(Function , [{FieldList, Row , User_data }] ) of 
+						{ continue, New_user_data} ->
+					 		recv_row_data(Sock, FieldList, SeqNum1, Tid, Key+1, {Function, New_user_data });
+						stop ->
+					 		{SeqNum1, ?ETS_SELECT(Tid), ?SERVER_NO_STATUS}
+					end;
 				true ->
-					ets:insert(Tid, {Key, Row})
-			end,
-			recv_row_data(Sock, FieldList, SeqNum1, Tid, Key+1, Fun)
+					ets:insert(Tid, {Key, Row}),
+					recv_row_data(Sock, FieldList, SeqNum1, Tid, Key+1, Fun)
+			end
 	end.
+
 
 decode_row_data(<<>>, [], Acc) ->
 	lists:reverse(Acc);
