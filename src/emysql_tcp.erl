@@ -288,10 +288,20 @@ recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun = {Function, User_data}) -
 	case Res of
 		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _WarningCount:16/little, ServerStatus:16/little>>} ->
 			%-% io:format("- eof: ~p~n", [emysql_conn:hstate(ServerStatus)]),
-			{SeqNum1, ?ETS_SELECT(Tid), ServerStatus};
+			if
+				is_function(Function)  ->
+					erlang:apply(Function , [{FieldList, no_more_rows , User_data }] ),
+					{SeqNum1, ?ETS_SELECT(Tid), ServerStatus};
+				true->
+					{SeqNum1, ?ETS_SELECT(Tid), ServerStatus}
+			end;
 
 		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _/binary>>} ->
 			%-% io:format("- eof.~n", []),
+			if
+				is_function(Function)  ->
+					erlang:apply(Function , [{FieldList, no_more_rows , User_data }] )
+			end,
 			{SeqNum1, ?ETS_SELECT(Tid), ?SERVER_NO_STATUS};
 
 		#packet{seq_num = SeqNum1, data = RowData} ->
