@@ -26,7 +26,7 @@
 %% OTHER DEALINGS IN THE SOFTWARE.
 
 -module(emysql_tcp).
--export([send_and_recv_packet/4,send_and_recv_packet/3, recv_packet/1, response/3]).
+-export([send_and_recv_packet/4,send_and_recv_packet/3, recv_packet/1, response/3, response/2]).
 
 -include("emysql.hrl").
 
@@ -174,6 +174,91 @@ response(Sock, #packet{seq_num = SeqNum, data = Data}=_Packet, Fun ) ->
 		rows = Rows,
 		extra = Extra },
 	  ServerStatus }.
+
+
+response(_Sock, #packet{seq_num = SeqNum, data = <<0:8, Rest/binary>>}=_Packet ) ->
+	%-% io:format("~nresponse (OK): ~p~n", [_Packet]),
+	{AffectedRows, Rest1} = emysql_util:length_coded_binary(Rest),
+	{InsertId, Rest2} = emysql_util:length_coded_binary(Rest1),
+	<<ServerStatus:16/little, WarningCount:16/little, Msg/binary>> = Rest2, % (*)!
+	%-% io:format("- warnings: ~p~n", [WarningCount]),
+	%-% io:format("- server status: ~p~n", [emysql_conn:hstate(ServerStatus)]),
+	{ #ok_packet{
+		seq_num = SeqNum,
+		affected_rows = AffectedRows,
+		insert_id = InsertId,
+		status = ServerStatus,
+		warning_count = WarningCount,
+		msg = unicode:characters_to_list(Msg) },
+	  ServerStatus };
+
+% EOF: MySQL format <= 4.0, single byte. See -2-
+response(_Sock, #packet{seq_num = SeqNum, data = <<?RESP_EOF:8>>}=_Packet) ->
+	%-% io:format("~nresponse (EOF v 4.0): ~p~n", [_Packet]),
+	{ #eof_packet{
+		seq_num = SeqNum },
+	  ?SERVER_NO_STATUS };
+
+% EOF: MySQL format >= 4.1, with warnings and status. See -2-
+response(_Sock, #packet{seq_num = SeqNum, data = <<?RESP_EOF:8, WarningCount:16/little, ServerStatus:16/little>>}=_Packet) -> % (*)!
+	%-% io:format("~nresponse (EOF v 4.1), Warn Count: ~p, Status ~p, Raw: ~p~n", [WarningCount, ServerStatus, _Packet]),
+	%-% io:format("- warnings: ~p~n", [WarningCount]),
+	%-% io:format("- server status: ~p~n", [emysql_conn:hstate(ServerStatus)]),
+	{ #eof_packet{
+		seq_num = SeqNum,
+		status = ServerStatus,
+		warning_count = WarningCount },
+	  ServerStatus };
+
+% ERROR response: MySQL format >= 4.1. See -3-
+response(_Sock, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, "#", SQLState:5/binary-unit:8, Msg/binary>>}=_Packet) ->
+	%-% io:format("~nresponse (Response is ERROR): SeqNum: ~p, Packet: ~p~n", [SeqNum, _Packet]),
+	{ #error_packet{
+		seq_num = SeqNum,
+		code = ErrNo,
+		status = SQLState,
+		msg = binary_to_list(Msg) }, % todo: test and possibly conversion to UTF-8
+	 ?SERVER_NO_STATUS };
+
+% ERROR response: MySQL format <= 4.0. See -3-
+response(_Sock, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, Msg/binary>>}=_Packet) ->
+	%-% io:format("~nresponse (Response is ERROR): SeqNum: ~p, Packet: ~p~n", [SeqNum, _Packet]),
+	{ #error_packet{
+		seq_num = SeqNum,
+		code = ErrNo,
+		status = 0,
+		msg = binary_to_list(Msg) }, % todo: test and possibly conversion to UTF-8
+	 ?SERVER_NO_STATUS };
+
+% DATA response.
+response(Sock, #packet{seq_num = SeqNum, data = Data}=_Packet ) ->
+	%-% io:format("~nresponse (DATA): ~p~n", [_Packet]),
+	{FieldCount, Rest1} = emysql_util:length_coded_binary(Data),
+	{Extra, _} = emysql_util:length_coded_binary(Rest1),
+	{SeqNum1, FieldList} = recv_field_list(Sock, SeqNum+1),
+	if
+		length(FieldList) =/= FieldCount ->
+			exit(query_returned_incorrect_field_count);
+		true ->
+			ok
+	end,
+	{SeqNum2, Rows, ServerStatus} = recv_row_data(Sock, FieldList, SeqNum1+1, no_function),
+
+	{ #result_packet{
+		seq_num = SeqNum2,
+		field_list = FieldList,
+		rows = Rows,
+		extra = Extra },
+	  ServerStatus }.
+
+
+
+
+
+
+
+
+
 
 recv_packet_header(Sock) ->
 	%-% io:format("~p recv_packet_header~n", [self()]),
