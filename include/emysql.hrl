@@ -37,7 +37,7 @@
 -record(result_packet, {seq_num, field_list, rows, extra}).
 
 %-define(TIMEOUT, 8000).
--define(TIMEOUT, 3600000).
+-define(TIMEOUT, 7200000).
 -define(LOCK_TIMEOUT, 5000).
 -define(MAXPACKETBYTES, 50000000).
 -define(LONG_PASSWORD, 1).
