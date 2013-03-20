@@ -162,19 +162,14 @@ response(Sock, #packet{seq_num = SeqNum, data = Data}=_Packet, Fun) ->
 		true ->
 			ok
 	end,
-	if 
-		is_function(Fun)  ->
-			{_SeqNum2, _Rows, ServerStatus} = recv_row_data(Sock, FieldList, SeqNum1+1, Fun),
-			{{},ServerStatus};
-		true ->
-			{SeqNum2, Rows, ServerStatus} = recv_row_data(Sock, FieldList, SeqNum1+1, Fun),
-			{ #result_packet{
-				seq_num = SeqNum2,
-				field_list = FieldList,
-				rows = Rows,
-				extra = Extra },
-			  ServerStatus }
-	end.
+	{SeqNum2, Rows, ServerStatus} = recv_row_data(Sock, FieldList, SeqNum1+1, Fun),
+
+	{ #result_packet{
+		seq_num = SeqNum2,
+		field_list = FieldList,
+		rows = Rows,
+		extra = Extra },
+	  ServerStatus }.
 
 recv_packet_header(Sock) ->
 	%-% io:format("~p recv_packet_header~n", [self()]),
@@ -286,19 +281,19 @@ recv_row_data(Sock, FieldList, SeqNum, Fun) ->
 	Res.
 
 recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, {Function, User_data}) when is_function(Function) ->
-	%io:format("~nreceive row ~p: ", [Key]),
+	%-% io:format("~nreceive row ~p: ", [Key]),
 	Res = recv_packet(Sock),
 
 	case Res of
 		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _WarningCount:16/little, ServerStatus:16/little>>} ->
 			%-% io:format("- eof: ~p~n", [emysql_conn:hstate(ServerStatus)]),
 			erlang:apply(Function , [{FieldList, no_more_rows , User_data }] ),
-			{SeqNum1, Tid, ServerStatus};
+			{SeqNum1, ?ETS_SELECT(Tid), ServerStatus};
 
 		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _/binary>>} ->
 			%-% io:format("- eof.~n", []),
-			erlang:apply(Function , [{FieldList, no_more_rows , User_data }] ),
-			{SeqNum1, Tid, ?SERVER_NO_STATUS};
+			erlang:apply(Function , [{FieldList, no_more_rows , User_data }] )
+			{SeqNum1, ?ETS_SELECT(Tid), ?SERVER_NO_STATUS};
 
 		#packet{seq_num = SeqNum1, data = RowData} ->
 			%io:format("Seq: ~p raw: ~p~n", [SeqNum1, RowData]),
@@ -307,24 +302,8 @@ recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, {Function, User_data}) when is
 				{ continue, New_user_data} ->
 			 		recv_row_data(Sock, FieldList, SeqNum1, Tid, Key+1, {Function, New_user_data });
 				stop ->
-			 		{SeqNum1, Tid, ?SERVER_NO_STATUS}
+			 		{SeqNum1, ?ETS_SELECT(Tid), ?SERVER_NO_STATUS}
 			end
-	end;
-
-recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun) ->
-	%io:format("~nreceive row WITHOUT FUNCTION ~p: ", [Fun]),
-	case recv_packet(Sock) of
-		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _WarningCount:16/little, ServerStatus:16/little>>} ->
-			%-% io:format("- eof: ~p~n", [emysql_conn:hstate(ServerStatus)]),
-			{SeqNum1, ?ETS_SELECT(Tid), ServerStatus};
-		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _/binary>>} ->
-			%-% io:format("- eof.~n", []),
-			{SeqNum1, ?ETS_SELECT(Tid), ?SERVER_NO_STATUS};
-		#packet{seq_num = SeqNum1, data = RowData} ->
-			%-% io:format("Seq: ~p raw: ~p~n", [SeqNum1, RowData]),
-			Row = decode_row_data(RowData, FieldList, []),
-			ets:insert(Tid, {Key, Row}),
-			recv_row_data(Sock, FieldList, SeqNum1, Tid, Key+1, Fun)
 	end.
 
 decode_row_data(<<>>, [], Acc) ->
