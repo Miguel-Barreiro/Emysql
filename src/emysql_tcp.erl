@@ -281,7 +281,7 @@ recv_row_data(Sock, FieldList, SeqNum, Fun) ->
 	Res.
 
 recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, {Function, User_data}) when is_function(Function) ->
-	io:format("~nreceive row ~p: ", [Key]),
+	%io:format("~nreceive row ~p: ", [Key]),
 	Res = recv_packet(Sock),
 
 	case Res of
@@ -307,7 +307,7 @@ recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, {Function, User_data}) when is
 	end;
 
 recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun) ->
-	io:format("~nreceive row WITHOUT FUNCTION ~p: ", [Fun]),
+	%io:format("~nreceive row WITHOUT FUNCTION ~p: ", [Fun]),
 	case recv_packet(Sock) of
 		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _WarningCount:16/little, ServerStatus:16/little>>} ->
 			%-% io:format("- eof: ~p~n", [emysql_conn:hstate(ServerStatus)]),
