@@ -271,6 +271,9 @@ recv_field_list(Sock, _SeqNum, Tid, Key) ->
 			recv_field_list(Sock, SeqNum1, Tid, Key+1)
 	end.
 
+recv_row_data(Sock, FieldList, SeqNum, Fun) when is_function(Fun) ->
+	recv_row_data(Sock, FieldList, SeqNum, no_tid, 0, {Fun,{}});
+
 recv_row_data(Sock, FieldList, SeqNum, Fun) ->
 	Tid = ets:new(emysql_row_data, [ordered_set, private]),
 	Res = recv_row_data(Sock, FieldList, SeqNum, Tid, 0, Fun),
@@ -278,7 +281,7 @@ recv_row_data(Sock, FieldList, SeqNum, Fun) ->
 	Res.
 
 recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, {Function, User_data}) when is_function(Function) ->
-	%-% io:format("~nreceive row ~p: ", [Key]),
+	io:format("~nreceive row ~p: ", [Key]),
 	Res = recv_packet(Sock),
 
 	case Res of
@@ -304,7 +307,7 @@ recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, {Function, User_data}) when is
 	end;
 
 recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun) ->
-	%-% io:format("~nreceive row ~p: ", [Key]),
+	io:format("~nreceive row WITHOUT FUNCTION ~p: ", [Fun]),
 	case recv_packet(Sock) of
 		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _WarningCount:16/little, ServerStatus:16/little>>} ->
 			%-% io:format("- eof: ~p~n", [emysql_conn:hstate(ServerStatus)]),
@@ -318,7 +321,6 @@ recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun) ->
 			ets:insert(Tid, {Key, Row}),
 			recv_row_data(Sock, FieldList, SeqNum1, Tid, Key+1, Fun)
 	end.
-
 
 decode_row_data(<<>>, [], Acc) ->
 	lists:reverse(Acc);
