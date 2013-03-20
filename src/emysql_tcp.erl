@@ -366,7 +366,7 @@ recv_row_data(Sock, FieldList, SeqNum, Fun ) ->
 	ets:delete(Tid),
 	Res.
 
-recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun = {Function, User_data}) ->
+recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, {Function, User_data}) ->
 	%-% io:format("~nreceive row ~p: ", [Key]),
 	Res = recv_packet(Sock),
 
