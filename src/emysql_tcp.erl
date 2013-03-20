@@ -315,7 +315,7 @@ recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun) ->
 		#packet{seq_num = SeqNum1, data = RowData} ->
 			%-% io:format("Seq: ~p raw: ~p~n", [SeqNum1, RowData]),
 			Row = decode_row_data(RowData, FieldList, []),
-			ets:insert(Tid, {Key, Row})
+			ets:insert(Tid, {Key, Row}),
 			recv_row_data(Sock, FieldList, SeqNum1, Tid, Key+1, Fun)
 	end.
 
