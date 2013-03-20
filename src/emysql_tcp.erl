@@ -277,22 +277,6 @@ recv_row_data(Sock, FieldList, SeqNum, Fun) ->
 	ets:delete(Tid),
 	Res.
 
-recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun) ->
-	%-% io:format("~nreceive row ~p: ", [Key]),
-	case recv_packet(Sock) of
-		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _WarningCount:16/little, ServerStatus:16/little>>} ->
-			%-% io:format("- eof: ~p~n", [emysql_conn:hstate(ServerStatus)]),
-			{SeqNum1, ?ETS_SELECT(Tid), ServerStatus};
-		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _/binary>>} ->
-			%-% io:format("- eof.~n", []),
-			{SeqNum1, ?ETS_SELECT(Tid), ?SERVER_NO_STATUS};
-		#packet{seq_num = SeqNum1, data = RowData} ->
-			%-% io:format("Seq: ~p raw: ~p~n", [SeqNum1, RowData]),
-			Row = decode_row_data(RowData, FieldList, []),
-			ets:insert(Tid, {Key, Row})
-			recv_row_data(Sock, FieldList, SeqNum1, Tid, Key+1, Fun)
-	end;
-
 recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, {Function, User_data}) when is_function(Function) ->
 	%-% io:format("~nreceive row ~p: ", [Key]),
 	Res = recv_packet(Sock),
@@ -317,7 +301,24 @@ recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, {Function, User_data}) when is
 				stop ->
 			 		{SeqNum1, ?ETS_SELECT(Tid), ?SERVER_NO_STATUS}
 			end
+	end;
+
+recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun) ->
+	%-% io:format("~nreceive row ~p: ", [Key]),
+	case recv_packet(Sock) of
+		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _WarningCount:16/little, ServerStatus:16/little>>} ->
+			%-% io:format("- eof: ~p~n", [emysql_conn:hstate(ServerStatus)]),
+			{SeqNum1, ?ETS_SELECT(Tid), ServerStatus};
+		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _/binary>>} ->
+			%-% io:format("- eof.~n", []),
+			{SeqNum1, ?ETS_SELECT(Tid), ?SERVER_NO_STATUS};
+		#packet{seq_num = SeqNum1, data = RowData} ->
+			%-% io:format("Seq: ~p raw: ~p~n", [SeqNum1, RowData]),
+			Row = decode_row_data(RowData, FieldList, []),
+			ets:insert(Tid, {Key, Row})
+			recv_row_data(Sock, FieldList, SeqNum1, Tid, Key+1, Fun)
 	end.
+
 
 decode_row_data(<<>>, [], Acc) ->
 	lists:reverse(Acc);
