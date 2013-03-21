@@ -26,7 +26,7 @@
 %% OTHER DEALINGS IN THE SOFTWARE.
 
 -module(emysql_tcp).
--export([send_and_recv_packet/4,send_and_recv_packet/3, recv_packet/1, response/3]).
+-export([send_and_recv_packet/4,send_and_recv_packet/3, recv_packet/1, response/3, response/2]).
 
 -include("emysql.hrl").
 
@@ -34,7 +34,8 @@
 -define(ETS_SELECT(TableID), ets:select(TableID,[{{'_','$2'},[],['$2']}])).
 
 
-send_and_recv_packet( Sock, Packet, SeqNum, Fun) when is_function(Fun) ->
+send_and_recv_packet( Sock, Packet, SeqNum, Function ) when is_function(Function) ->
+
 	case gen_tcp:send(Sock, <<(size(Packet)):24/little, SeqNum:8, Packet/binary>>) of
 		ok -> 
 			%-% io:format("~p send_and_recv_packet: send ok~n", [self()]),
@@ -44,10 +45,11 @@ send_and_recv_packet( Sock, Packet, SeqNum, Fun) when is_function(Fun) ->
 			exit({failed_to_send_packet_to_server, Reason})
 	end,
 	%-% io:format("~p send_and_recv_packet: resonse_list~n", [self()]),
-	response_list(Sock, ?SERVER_MORE_RESULTS_EXIST, Fun).
+	response_list(Sock, ?SERVER_MORE_RESULTS_EXIST, {Function, {} }).
 	
 
 send_and_recv_packet(Sock, Packet, SeqNum) ->
+
 	%-% io:format("~nsend_and_receive_packet: SEND SeqNum: ~p, Binary: ~p~n", [SeqNum, <<(size(Packet)):24/little, SeqNum:8, Packet/binary>>]),
 	%-% io:format("~p send_and_recv_packet: send~n", [self()]),
 	case gen_tcp:send(Sock, <<(size(Packet)):24/little, SeqNum:8, Packet/binary>>) of
@@ -72,9 +74,9 @@ send_and_recv_packet(Sock, Packet, SeqNum) ->
 	end.
 
 
-response_list(_, 0, Fun) when is_function(Fun) -> [];
+response_list(_, 0, {Function, _Acumulator}) when is_function(Function) -> [];
 
-response_list(Sock, ?SERVER_MORE_RESULTS_EXIST, Fun) when is_function(Fun) ->
+response_list(Sock, ?SERVER_MORE_RESULTS_EXIST, Fun = {Function, _Acumulator} ) when is_function(Function) ->
 	{_Response, ServerStatus} = response(Sock, recv_packet(Sock), Fun ),
 	response_list(Sock, ServerStatus band ?SERVER_MORE_RESULTS_EXIST, Fun).
 
@@ -83,8 +85,9 @@ response_list(Sock, ?SERVER_MORE_RESULTS_EXIST, Fun) when is_function(Fun) ->
 response_list(_, 0) -> [];
 
 response_list(Sock, ?SERVER_MORE_RESULTS_EXIST) ->
-	{Response, ServerStatus} = response(Sock, recv_packet(Sock), no_function ),
+	{Response, ServerStatus} = response(Sock, recv_packet(Sock), {no_function, {}} ),
 	[ Response | response_list(Sock, ServerStatus band ?SERVER_MORE_RESULTS_EXIST)].
+
 
 recv_packet(Sock) ->
 	%-% io:format("~p recv_packet~n", [self()]),
@@ -95,8 +98,9 @@ recv_packet(Sock) ->
 	%-% io:format("~nrecv_packet: len: ~p, data: ~p~n", [PacketLength, Data]),
 	#packet{size=PacketLength, seq_num=SeqNum, data=Data}.
 
+
 % OK response: first byte 0. See -1-
-response(_Sock, #packet{seq_num = SeqNum, data = <<0:8, Rest/binary>>}=_Packet,_Fun) ->
+response(_Sock, #packet{seq_num = SeqNum, data = <<0:8, Rest/binary>>}=_Packet, _Fun ) ->
 	%-% io:format("~nresponse (OK): ~p~n", [_Packet]),
 	{AffectedRows, Rest1} = emysql_util:length_coded_binary(Rest),
 	{InsertId, Rest2} = emysql_util:length_coded_binary(Rest1),
@@ -151,7 +155,7 @@ response(_Sock, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, Msg/b
 	 ?SERVER_NO_STATUS };
 
 % DATA response.
-response(Sock, #packet{seq_num = SeqNum, data = Data}=_Packet, Fun) ->
+response(Sock, #packet{seq_num = SeqNum, data = Data}=_Packet, Fun ) ->
 	%-% io:format("~nresponse (DATA): ~p~n", [_Packet]),
 	{FieldCount, Rest1} = emysql_util:length_coded_binary(Data),
 	{Extra, _} = emysql_util:length_coded_binary(Rest1),
@@ -170,6 +174,91 @@ response(Sock, #packet{seq_num = SeqNum, data = Data}=_Packet, Fun) ->
 		rows = Rows,
 		extra = Extra },
 	  ServerStatus }.
+
+
+response(_Sock, #packet{seq_num = SeqNum, data = <<0:8, Rest/binary>>}=_Packet ) ->
+	%-% io:format("~nresponse (OK): ~p~n", [_Packet]),
+	{AffectedRows, Rest1} = emysql_util:length_coded_binary(Rest),
+	{InsertId, Rest2} = emysql_util:length_coded_binary(Rest1),
+	<<ServerStatus:16/little, WarningCount:16/little, Msg/binary>> = Rest2, % (*)!
+	%-% io:format("- warnings: ~p~n", [WarningCount]),
+	%-% io:format("- server status: ~p~n", [emysql_conn:hstate(ServerStatus)]),
+	{ #ok_packet{
+		seq_num = SeqNum,
+		affected_rows = AffectedRows,
+		insert_id = InsertId,
+		status = ServerStatus,
+		warning_count = WarningCount,
+		msg = unicode:characters_to_list(Msg) },
+	  ServerStatus };
+
+% EOF: MySQL format <= 4.0, single byte. See -2-
+response(_Sock, #packet{seq_num = SeqNum, data = <<?RESP_EOF:8>>}=_Packet) ->
+	%-% io:format("~nresponse (EOF v 4.0): ~p~n", [_Packet]),
+	{ #eof_packet{
+		seq_num = SeqNum },
+	  ?SERVER_NO_STATUS };
+
+% EOF: MySQL format >= 4.1, with warnings and status. See -2-
+response(_Sock, #packet{seq_num = SeqNum, data = <<?RESP_EOF:8, WarningCount:16/little, ServerStatus:16/little>>}=_Packet) -> % (*)!
+	%-% io:format("~nresponse (EOF v 4.1), Warn Count: ~p, Status ~p, Raw: ~p~n", [WarningCount, ServerStatus, _Packet]),
+	%-% io:format("- warnings: ~p~n", [WarningCount]),
+	%-% io:format("- server status: ~p~n", [emysql_conn:hstate(ServerStatus)]),
+	{ #eof_packet{
+		seq_num = SeqNum,
+		status = ServerStatus,
+		warning_count = WarningCount },
+	  ServerStatus };
+
+% ERROR response: MySQL format >= 4.1. See -3-
+response(_Sock, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, "#", SQLState:5/binary-unit:8, Msg/binary>>}=_Packet) ->
+	%-% io:format("~nresponse (Response is ERROR): SeqNum: ~p, Packet: ~p~n", [SeqNum, _Packet]),
+	{ #error_packet{
+		seq_num = SeqNum,
+		code = ErrNo,
+		status = SQLState,
+		msg = binary_to_list(Msg) }, % todo: test and possibly conversion to UTF-8
+	 ?SERVER_NO_STATUS };
+
+% ERROR response: MySQL format <= 4.0. See -3-
+response(_Sock, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, Msg/binary>>}=_Packet) ->
+	%-% io:format("~nresponse (Response is ERROR): SeqNum: ~p, Packet: ~p~n", [SeqNum, _Packet]),
+	{ #error_packet{
+		seq_num = SeqNum,
+		code = ErrNo,
+		status = 0,
+		msg = binary_to_list(Msg) }, % todo: test and possibly conversion to UTF-8
+	 ?SERVER_NO_STATUS };
+
+% DATA response.
+response(Sock, #packet{seq_num = SeqNum, data = Data}=_Packet ) ->
+	%-% io:format("~nresponse (DATA): ~p~n", [_Packet]),
+	{FieldCount, Rest1} = emysql_util:length_coded_binary(Data),
+	{Extra, _} = emysql_util:length_coded_binary(Rest1),
+	{SeqNum1, FieldList} = recv_field_list(Sock, SeqNum+1),
+	if
+		length(FieldList) =/= FieldCount ->
+			exit(query_returned_incorrect_field_count);
+		true ->
+			ok
+	end,
+	{SeqNum2, Rows, ServerStatus} = recv_row_data(Sock, FieldList, SeqNum1+1, no_function),
+
+	{ #result_packet{
+		seq_num = SeqNum2,
+		field_list = FieldList,
+		rows = Rows,
+		extra = Extra },
+	  ServerStatus }.
+
+
+
+
+
+
+
+
+
 
 recv_packet_header(Sock) ->
 	%-% io:format("~p recv_packet_header~n", [self()]),
@@ -271,14 +360,12 @@ recv_field_list(Sock, _SeqNum, Tid, Key) ->
 			recv_field_list(Sock, SeqNum1, Tid, Key+1)
 	end.
 
-recv_row_data(Sock, FieldList, SeqNum, Fun) when is_function(Fun) ->
-	recv_row_data(Sock, FieldList, SeqNum, no_tid, 0, {Fun,{}});
-
-recv_row_data(Sock, FieldList, SeqNum, Fun) ->
+recv_row_data(Sock, FieldList, SeqNum, Fun ) ->
 	Tid = ets:new(emysql_row_data, [ordered_set, private]),
 	Res = recv_row_data(Sock, FieldList, SeqNum, Tid, 0, Fun),
 	ets:delete(Tid),
 	Res.
+
 
 recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, {Function, User_data}) when is_function(Function) ->
 	%-% io:format("~nreceive row ~p: ", [Key]),
@@ -304,7 +391,29 @@ recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, {Function, User_data}) when is
 				stop ->
 			 		{SeqNum1, ?ETS_SELECT(Tid), ?SERVER_NO_STATUS}
 			end
+	end;
+
+recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, Fun) ->
+	%-% io:format("~nreceive row ~p: ", [Key]),
+	Res = recv_packet(Sock),
+
+	case Res of
+		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _WarningCount:16/little, ServerStatus:16/little>>} ->
+			%-% io:format("- eof: ~p~n", [emysql_conn:hstate(ServerStatus)]),
+			{SeqNum1, ?ETS_SELECT(Tid), ServerStatus};
+
+		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _/binary>>} ->
+			%-% io:format("- eof.~n", []),
+			{SeqNum1, ?ETS_SELECT(Tid), ?SERVER_NO_STATUS};
+
+		#packet{seq_num = SeqNum1, data = RowData} ->
+			%io:format("Seq: ~p raw: ~p~n", [SeqNum1, RowData]),
+			Row = decode_row_data(RowData, FieldList, []),
+			ets:insert(Tid, {Key, Row}),
+			recv_row_data(Sock, FieldList, SeqNum1, Tid, Key+1, Fun)
 	end.
+
+
 
 decode_row_data(<<>>, [], Acc) ->
 	lists:reverse(Acc);
