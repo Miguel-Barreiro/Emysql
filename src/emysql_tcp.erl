@@ -292,7 +292,7 @@ recv_row_data(Sock, FieldList, _SeqNum, Tid, Key, {Function, User_data}) when is
 
 		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _/binary>>} ->
 			%-% io:format("- eof.~n", []),
-			erlang:apply(Function , [{FieldList, no_more_rows , User_data }] )
+			erlang:apply(Function , [{FieldList, no_more_rows , User_data }] ),
 			{SeqNum1, ?ETS_SELECT(Tid), ?SERVER_NO_STATUS};
 
 		#packet{seq_num = SeqNum1, data = RowData} ->
